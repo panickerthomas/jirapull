@@ -38,16 +38,57 @@ def fetch_issue_details(issue_key):
         print(f"Error fetching issue '{issue_key}': {e}")
         return {}
 
+# Function to transform field names: replace spaces with underscores and prepend 'mss_'
+def transform_field_name(field_name):
+    return f"mss_{field_name.lower().replace(' ', '_')}"
+
+# Recursive function to flatten and insert JSON data
+def flatten_json_and_insert(data, parent_key='', counter=0):
+    """
+    Recursively flatten a nested JSON structure and insert each key-value pair into the PostgreSQL table.
+    """
+    conn = psycopg2.connect(**pg_conn_params)
+    cur = conn.cursor()
+
+    if isinstance(data, dict):
+        for key, value in data.items():
+            new_key = f"{parent_key}_{key}" if parent_key else key  # Create new key without issue_key
+            flatten_json_and_insert(value, new_key)
+    elif isinstance(data, list):
+        for i, item in enumerate(data):
+            new_key = f"{parent_key}_{i}"  # Add the index of the list as a suffix to ensure uniqueness
+            flatten_json_and_insert(item, new_key)
+    else:
+        # Add a counter suffix to field_id if it already exists to avoid duplicate key errors
+        insert_query = """
+            INSERT INTO jira_fields_2 (field_id, field_name, field_value)
+            VALUES (%s, %s, %s)
+        """
+        try:
+            cur.execute(insert_query, (parent_key, transform_field_name(parent_key), json.dumps(data)))  # Removed issue_key from field_id
+        except psycopg2.errors.UniqueViolation:
+            # If there's a duplicate key error, append a unique counter to the key
+            new_key_with_counter = f"{parent_key}_{counter}"
+            cur.execute(insert_query, (new_key_with_counter, transform_field_name(parent_key), json.dumps(data)))
+            counter += 1
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
 # Function to create a PostgreSQL table 'jira_fields_2'
-def create_jira_fields_table(fields):
+def create_jira_fields_table():
     try:
         conn = psycopg2.connect(**pg_conn_params)
         cur = conn.cursor()
 
         # Drop table if it exists
+        print("Dropping existing table if it exists...")
         cur.execute("DROP TABLE IF EXISTS jira_fields_2")
+        conn.commit()
 
         # Build a SQL query to create the table based on the field names and types
+        print("Creating new table 'jira_fields_2'...")
         create_table_query = """
             CREATE TABLE jira_fields_2 (
                 field_id TEXT PRIMARY KEY,
@@ -55,7 +96,6 @@ def create_jira_fields_table(fields):
                 field_value JSONB
             )
         """
-
         cur.execute(create_table_query)
         conn.commit()
 
@@ -66,31 +106,6 @@ def create_jira_fields_table(fields):
     except Exception as e:
         print(f"Error creating 'jira_fields_2' table: {e}")
 
-# Function to insert fields into the jira_fields_2 table
-def insert_fields_into_table(fields):
-    try:
-        conn = psycopg2.connect(**pg_conn_params)
-        cur = conn.cursor()
-
-        # Insert each field into the table
-        for field_id, field_value in fields.items():
-            field_name = field_id  # You can map field IDs to names if needed
-            field_value_json = json.dumps(field_value) if field_value is not None else None
-
-            insert_query = """
-                INSERT INTO jira_fields_2 (field_id, field_name, field_value)
-                VALUES (%s, %s, %s)
-            """
-            cur.execute(insert_query, (field_id, field_name, field_value_json))
-
-        conn.commit()
-        print("Fields inserted into 'jira_fields_2' table.")
-
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"Error inserting fields into 'jira_fields_2': {e}")
-
 if __name__ == '__main__':
     # Fetch issue details for MSSCI-4577
     issue_key = 'MSSCI-4577'
@@ -98,9 +113,9 @@ if __name__ == '__main__':
 
     if issue_fields:
         # Create the PostgreSQL table
-        create_jira_fields_table(issue_fields)
+        create_jira_fields_table()
 
-        # Insert the fields into the newly created table
-        insert_fields_into_table(issue_fields)
+        # Flatten the issue fields and insert them into the table
+        flatten_json_and_insert(issue_fields, parent_key='', counter=0)
     else:
         print("No fields to insert.")

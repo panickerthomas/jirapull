@@ -51,14 +51,51 @@ def fetch_all_issues(jql_query="project=MSSCI ORDER BY created DESC", batch_size
 def transform_field_name(field_name):
     return f"mss_{field_name.lower().replace(' ', '_')}"
 
-# Recursive function to flatten and insert JSON data
-def flatten_json_and_insert(issue_key, data, parent_key='', counter=0):
+# Function to check if a field exists and if the value has changed
+def check_and_update_field(issue_key, field_id, new_field_value):
     """
-    Recursively flatten a nested JSON structure and insert each key-value pair into the PostgreSQL table.
+    Check if the field exists and if the value has changed.
+    If the value has changed, update the record. Otherwise, skip.
     """
     conn = psycopg2.connect(**pg_conn_params)
     cur = conn.cursor()
 
+    # Query to check if the field exists in the database
+    check_query = """
+        SELECT field_value FROM jira_fields_2
+        WHERE issue_key = %s AND field_id = %s
+    """
+    cur.execute(check_query, (issue_key, field_id))
+    result = cur.fetchone()
+
+    # If field exists, check if the value has changed
+    if result:
+        current_value = result[0]
+        if current_value != new_field_value:  # Compare old value with new value
+            update_query = """
+                UPDATE jira_fields_2
+                SET field_value = %s
+                WHERE issue_key = %s AND field_id = %s
+            """
+            cur.execute(update_query, (new_field_value, issue_key, field_id))
+            print(f"Updated {field_id} for issue {issue_key}")
+    else:
+        # If field does not exist, insert it as a new record
+        insert_query = """
+            INSERT INTO jira_fields_2 (issue_key, field_id, field_name, field_value)
+            VALUES (%s, %s, %s, %s)
+        """
+        cur.execute(insert_query, (issue_key, field_id, transform_field_name(field_id), new_field_value))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Recursive function to flatten and insert/update JSON data
+def flatten_json_and_insert(issue_key, data, parent_key='', counter=0):
+    """
+    Recursively flatten a nested JSON structure and insert/update each key-value pair into the PostgreSQL table.
+    """
     if isinstance(data, dict):
         for key, value in data.items():
             new_key = f"{parent_key}_{key}" if parent_key else key  # Create new key
@@ -68,22 +105,9 @@ def flatten_json_and_insert(issue_key, data, parent_key='', counter=0):
             new_key = f"{parent_key}_{i}"  # Add the index of the list as a suffix to ensure uniqueness
             flatten_json_and_insert(issue_key, item, new_key)
     else:
-        # Add a counter suffix to field_id if it already exists to avoid duplicate key errors
-        insert_query = """
-            INSERT INTO jira_fields_2 (issue_key, field_id, field_name, field_value)
-            VALUES (%s, %s, %s, %s)
-        """
-        try:
-            cur.execute(insert_query, (issue_key, parent_key, transform_field_name(parent_key), json.dumps(data)))
-        except psycopg2.errors.UniqueViolation:
-            # If there's a duplicate key error, append a unique counter to the key
-            new_key_with_counter = f"{parent_key}_{counter}"
-            cur.execute(insert_query, (issue_key, new_key_with_counter, transform_field_name(parent_key), json.dumps(data)))
-            counter += 1
-
-    conn.commit()
-    cur.close()
-    conn.close()
+        # Handle non-dict and non-list values by checking and updating
+        new_field_value = json.dumps(data) if data is not None else None
+        check_and_update_field(issue_key, parent_key, new_field_value)
 
 # Function to create a PostgreSQL table 'jira_fields_2'
 def create_jira_fields_table():
@@ -130,7 +154,7 @@ if __name__ == '__main__':
             issue_key = issue.key
             issue_fields = issue.raw['fields']
             
-            # Flatten the issue fields and insert them into the table
+            # Flatten the issue fields and insert/update them into the table
             flatten_json_and_insert(issue_key, issue_fields, parent_key='', counter=0)
     else:
         print("No issues to insert.")
