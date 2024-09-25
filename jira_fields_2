@@ -1,0 +1,106 @@
+import os
+import json
+import psycopg2
+from jira import JIRA
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Jira API connection setup using environment variables
+jira_url = os.getenv('JIRA_URL')
+jira_username = os.getenv('JIRA_USERNAME')
+jira_token = os.getenv('JIRA_TOKEN')
+
+# PostgreSQL connection setup
+pg_conn_params = {
+    'dbname': os.getenv('PG_DBNAME'),
+    'user': os.getenv('PG_USER'),
+    'password': os.getenv('PG_PASSWORD'),
+    'host': os.getenv('PG_HOST'),
+    'port': os.getenv('PG_PORT')
+}
+
+# Connect to Jira
+jira = JIRA(server=jira_url, basic_auth=(jira_username, jira_token))
+
+# Function to fetch issue details
+def fetch_issue_details(issue_key):
+    try:
+        # Fetch the issue using the issue key (e.g., 'MSSCI-4577')
+        issue = jira.issue(issue_key)
+        
+        # Get the fields from the issue
+        fields = issue.raw['fields']
+        
+        return fields
+    except Exception as e:
+        print(f"Error fetching issue '{issue_key}': {e}")
+        return {}
+
+# Function to create a PostgreSQL table 'jira_fields_2'
+def create_jira_fields_table(fields):
+    try:
+        conn = psycopg2.connect(**pg_conn_params)
+        cur = conn.cursor()
+
+        # Drop table if it exists
+        cur.execute("DROP TABLE IF EXISTS jira_fields_2")
+
+        # Build a SQL query to create the table based on the field names and types
+        create_table_query = """
+            CREATE TABLE jira_fields_2 (
+                field_id TEXT PRIMARY KEY,
+                field_name TEXT,
+                field_value JSONB
+            )
+        """
+
+        cur.execute(create_table_query)
+        conn.commit()
+
+        print("Table 'jira_fields_2' created successfully.")
+
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error creating 'jira_fields_2' table: {e}")
+
+# Function to insert fields into the jira_fields_2 table
+def insert_fields_into_table(fields):
+    try:
+        conn = psycopg2.connect(**pg_conn_params)
+        cur = conn.cursor()
+
+        # Insert each field into the table
+        for field_id, field_value in fields.items():
+            field_name = field_id  # You can map field IDs to names if needed
+            field_value_json = json.dumps(field_value) if field_value is not None else None
+
+            insert_query = """
+                INSERT INTO jira_fields_2 (field_id, field_name, field_value)
+                VALUES (%s, %s, %s)
+            """
+            cur.execute(insert_query, (field_id, field_name, field_value_json))
+
+        conn.commit()
+        print("Fields inserted into 'jira_fields_2' table.")
+
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error inserting fields into 'jira_fields_2': {e}")
+
+if __name__ == '__main__':
+    # Fetch issue details for MSSCI-4577
+    issue_key = 'MSSCI-4577'
+    issue_fields = fetch_issue_details(issue_key)
+
+    if issue_fields:
+        # Create the PostgreSQL table
+        create_jira_fields_table(issue_fields)
+
+        # Insert the fields into the newly created table
+        insert_fields_into_table(issue_fields)
+    else:
+        print("No fields to insert.")
