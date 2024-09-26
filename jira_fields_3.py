@@ -83,7 +83,7 @@ def check_and_update_field(cur, issue_key, field_id, new_field_value):
                 WHERE issue_key = %s AND field_id = %s
             """
             cur.execute(update_query, (new_field_value, issue_key, field_id))
-            logging.info(f"Updated {field_id} for issue {issue_key}")
+            logging.info(f"{issue_key}:Updated {field_id} for issue {issue_key}")
     else:
         # Insert new record
         insert_query = """
